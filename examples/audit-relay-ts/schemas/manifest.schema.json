@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/buildwithdesi/solari-cookbook/schemas/audit-relay/manifest.schema.json",
+  "title": "AuditRelay Run Manifest",
+  "description": "Agent entry point for a single audit run. Read this file first.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "target_url",
+    "status",
+    "depth",
+    "created_at",
+    "phases",
+    "agent_read_order"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "target_url": { "type": "string", "format": "uri" },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "completed", "partial", "failed"]
+    },
+    "depth": {
+      "type": "string",
+      "enum": ["quick", "standard", "deep"]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "solari_browser_ms": { "type": "integer" },
+        "solari_sandbox_ms": { "type": "integer" },
+        "replay_polled": { "type": "boolean" }
+      }
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "observe.sandbox",
+              "observe.browser",
+              "interpret",
+              "score",
+              "render"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "running", "completed", "skipped", "failed"]
+          },
+          "duration_ms": { "type": "integer" },
+          "observation": { "type": "string" },
+          "output": { "type": "string" },
+          "artifact": { "type": "string" },
+          "error": { "type": "string" }
+        }
+      }
+    },
+    "agent_read_order": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "resume": {
+      "type": ["object", "null"],
+      "properties": {
+        "from_phase": { "type": "string" }
+      }
+    }
+  },
+  "additionalProperties": false
+}

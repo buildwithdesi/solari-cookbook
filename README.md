@@ -32,7 +32,7 @@ past. Copy one into your project and change the parts you care about.
 | Example | Language | What it shows |
 | --- | --- | --- |
 | [desktop-computer-use-py](examples/desktop-computer-use-py) | Python | Screenshot, click, and type on a Linux GUI |
-| [audit-relay-ts](examples/audit-relay-ts) | TypeScript | **Client site audit** — browser capture + sandbox header scan + HTML report |
+| [audit-relay-ts](examples/audit-relay-ts) | TypeScript | **Client site audit** — browser + sandbox + agent-native design ([AGENTS.md](examples/audit-relay-ts/AGENTS.md)) |
 
 ## Running an example
 

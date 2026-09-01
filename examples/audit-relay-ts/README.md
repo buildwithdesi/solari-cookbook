@@ -6,11 +6,25 @@ AuditRelay is a real use case for the [Solari hiring challenge](https://github.c
 
 Built by [Desi Baker](https://github.com/buildwithdesi) with AI-assisted vibe coding (Cursor + agents).
 
+## For agents (read first)
+
+| Doc | Purpose |
+|-----|---------|
+| [`AGENTS.md`](AGENTS.md) | How to drive runs, read outputs, pick depth |
+| [`DESIGN.md`](DESIGN.md) | System architecture and abstraction tower |
+| [`PLAN.md`](PLAN.md) | Implementation roadmap v0 → v1 |
+| [`docs/CHECK-REGISTRY.md`](docs/CHECK-REGISTRY.md) | Stable check IDs for diff/accretion |
+| [`schemas/`](schemas/) | JSON Schema for manifest and summary (v1 target) |
+
+**Agent rule:** Read structured JSON before HTML. Solari costs money; interpret/score should be free on cached runs (v1).
+
 ## What it does
 
 1. **Sandbox phase** — spins up a Solari microVM and runs `curl` for TLS redirect + security headers (HSTS, CSP, X-Frame-Options, etc.).
 2. **Browser phase** — launches a stealth Solari browser with session recording, captures the landing page plus up to two internal pages, screenshots each view, and polls for the replay URL.
-3. **Report** — writes a DA-branded HTML report and JSON summary to `output/`.
+3. **Report** — writes a DA-branded HTML report and JSON summary to `output/` (v1: `runs/{run_id}/` + `manifest.json`).
+
+**v0 today · v1 target:** See `DESIGN.md` for the run envelope and accretion model.
 
 ## Quick start
 

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/buildwithdesi/solari-cookbook/schemas/audit-relay/summary.schema.json",
+  "title": "AuditRelay Run Summary",
+  "description": "Minimal agent read after manifest. Score and counts only.",
+  "type": "object",
+  "required": ["run_id", "target_url", "score", "verdict", "counts"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "target_url": { "type": "string", "format": "uri" },
+    "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "verdict": { "type": "string" },
+    "counts": {
+      "type": "object",
+      "required": ["critical", "high", "medium", "low", "pass", "actionable"],
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 },
+        "pass": { "type": "integer", "minimum": 0 },
+        "actionable": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "top_findings": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["check_id", "severity", "title"],
+        "properties": {
+          "check_id": { "type": "string" },
+          "severity": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
