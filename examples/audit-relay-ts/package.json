@@ -6,7 +6,10 @@
   "type": "module",
   "scripts": {
     "start": "tsx index.ts",
-    "audit": "tsx index.ts"
+    "audit": "tsx index.ts",
+    "audit:quick": "tsx index.ts",
+    "audit:landing": "tsx index.ts",
+    "test": "tsx test.ts"
   },
   "dependencies": {
     "@solarisdk/browser": "^0.1.1",

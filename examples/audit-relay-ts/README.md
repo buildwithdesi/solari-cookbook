@@ -21,7 +21,31 @@ export SOLARI_API_KEY=slr_live_...   # console.getsolari.com
 npm run audit -- https://example.com
 ```
 
-Open `output/audit-report.html` when it finishes.
+Open `output/audit-report.html` when it finishes. Screenshots live in `output/screenshots/`.
+
+### Flags
+
+npm sometimes eats `--flags`. Use env vars or the helper scripts:
+
+```bash
+# Full audit with replay polling
+npm run audit -- https://example.com
+
+# Faster iteration (skip replay poll)
+$env:AUDIT_SKIP_REPLAY='1'; npm run audit -- https://example.com
+
+# Landing page only
+$env:AUDIT_LANDING_ONLY='1'; npm run audit -- https://example.com
+
+# Local scoring tests (no API key burn)
+npm test
+```
+
+Direct tsx also works if flags must be explicit:
+
+```bash
+node_modules/.bin/tsx index.ts https://example.com --skip-replay
+```
 
 ## Why this use case
 

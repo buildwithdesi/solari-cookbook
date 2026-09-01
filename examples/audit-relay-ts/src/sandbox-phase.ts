@@ -30,6 +30,7 @@ function headerChecks(raw: string): HeaderCheck[] {
 }
 
 export async function runSandboxAudit(targetUrl: string): Promise<SandboxAuditResult> {
+  const startedAt = Date.now();
   const normalized = /^https?:\/\//i.test(targetUrl)
     ? targetUrl
     : `https://${targetUrl}`;
@@ -91,6 +92,7 @@ export async function runSandboxAudit(targetUrl: string): Promise<SandboxAuditRe
       tlsRedirect,
       serverBanner,
       findings,
+      durationMs: Date.now() - startedAt,
     };
   } finally {
     await sandbox.kill();

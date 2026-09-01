@@ -14,6 +14,7 @@ export interface PageSnapshot {
   title: string;
   status: number | null;
   screenshotBase64: string;
+  screenshotFile: string | null;
   metaDescription: string | null;
   h1: string | null;
   scriptCount: number;
@@ -34,6 +35,7 @@ export interface SandboxAuditResult {
   tlsRedirect: boolean;
   serverBanner: string | null;
   findings: Finding[];
+  durationMs: number;
 }
 
 export interface BrowserAuditResult {
@@ -41,14 +43,23 @@ export interface BrowserAuditResult {
   replayUrl: string | null;
   pages: PageSnapshot[];
   findings: Finding[];
+  durationMs: number;
 }
 
 export interface AuditRelayReport {
   targetUrl: string;
   auditedAt: string;
   durationMs: number;
+  sandboxMs: number;
+  browserMs: number;
   browser: BrowserAuditResult;
   sandbox: SandboxAuditResult;
   findings: Finding[];
   score: number;
+  verdict: string;
+}
+
+export interface AuditOptions {
+  skipReplay?: boolean;
+  maxExtraPages?: number;
 }

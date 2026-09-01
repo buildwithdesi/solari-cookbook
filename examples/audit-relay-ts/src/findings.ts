@@ -94,7 +94,7 @@ export function findingsFromPage(page: PageSnapshot, isHttps: boolean): Finding[
       severity: "low",
       category: "SEO",
       title: "Missing meta description",
-      detail: "No meta description tag found on the landing page.",
+      detail: "No meta description tag found on this page.",
       recommendation: "Add a concise meta description for search and social previews.",
     });
   }
@@ -139,6 +139,17 @@ export function findingsFromTlsRedirect(tlsRedirect: boolean, url: string): Find
   ];
 }
 
+export function dedupeFindings(findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  const unique: Finding[] = [];
+  for (const finding of findings) {
+    if (seen.has(finding.id)) continue;
+    seen.add(finding.id);
+    unique.push(finding);
+  }
+  return unique;
+}
+
 export function computeScore(findings: Finding[]): number {
   let score = 100;
   for (const finding of findings) {
@@ -164,6 +175,13 @@ export function computeScore(findings: Finding[]): number {
     }
   }
   return Math.max(0, Math.min(100, score));
+}
+
+export function scoreVerdict(score: number): string {
+  if (score >= 85) return "Strong posture. Ship with minor polish.";
+  if (score >= 70) return "Solid base. Fix high items before client handoff.";
+  if (score >= 50) return "Needs work. Address transport and header gaps first.";
+  return "High risk. Treat as pre-production.";
 }
 
 export function sortFindings(findings: Finding[]): Finding[] {

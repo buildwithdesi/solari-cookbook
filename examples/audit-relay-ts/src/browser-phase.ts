@@ -1,9 +1,18 @@
 import { Solari } from "@solarisdk/browser";
 
 import { findingsFromPage } from "./findings.js";
-import type { BrowserAuditResult, Finding, PageSnapshot } from "./types.js";
+import type { AuditOptions, BrowserAuditResult, Finding, PageSnapshot } from "./types.js";
 
-const MAX_EXTRA_PAGES = 2;
+const PRIORITY_SEGMENTS = [
+  "about",
+  "pricing",
+  "learn",
+  "contact",
+  "blog",
+  "skills",
+  "services",
+  "product",
+];
 
 function normalizeTargetUrl(raw: string): string {
   const trimmed = raw.trim();
@@ -11,6 +20,17 @@ function normalizeTargetUrl(raw: string): string {
     return `https://${trimmed}`;
   }
   return trimmed;
+}
+
+function scoreInternalPath(pathname: string): number {
+  const lower = pathname.toLowerCase();
+  if (lower === "/" || lower === "") return -1;
+  for (let index = 0; index < PRIORITY_SEGMENTS.length; index += 1) {
+    if (lower.includes(PRIORITY_SEGMENTS[index])) {
+      return PRIORITY_SEGMENTS.length - index;
+    }
+  }
+  return 0;
 }
 
 async function capturePage(page: import("playwright-core").Page, url: string): Promise<PageSnapshot> {
@@ -54,6 +74,7 @@ async function capturePage(page: import("playwright-core").Page, url: string): P
     title: data.title,
     status: response?.status() ?? null,
     screenshotBase64: screenshot.toString("base64"),
+    screenshotFile: null,
     metaDescription: data.metaDescription,
     h1: data.h1,
     scriptCount: data.scriptCount,
@@ -67,6 +88,8 @@ async function capturePage(page: import("playwright-core").Page, url: string): P
 async function discoverInternalLinks(
   page: import("playwright-core").Page,
   origin: string,
+  landingPath: string,
+  maxExtraPages: number,
 ): Promise<string[]> {
   const hrefs = await page.evaluate(() =>
     Array.from(document.querySelectorAll("a[href]"))
@@ -74,23 +97,24 @@ async function discoverInternalLinks(
       .filter(Boolean),
   );
 
-  const seen = new Set<string>();
-  const candidates: string[] = [];
+  const ranked: Array<{ url: string; score: number }> = [];
 
   for (const href of hrefs) {
     try {
       const parsed = new URL(href);
       if (parsed.origin !== origin) continue;
-      const clean = `${parsed.origin}${parsed.pathname}`;
-      if (seen.has(clean)) continue;
-      seen.add(clean);
-      candidates.push(clean);
+      const clean = `${parsed.origin}${parsed.pathname}`.replace(/\/$/, "") || origin;
+      const landingClean = `${origin}${landingPath}`.replace(/\/$/, "") || origin;
+      if (clean === landingClean) continue;
+      if (ranked.some((entry) => entry.url === clean)) continue;
+      ranked.push({ url: clean, score: scoreInternalPath(parsed.pathname) });
     } catch {
       continue;
     }
   }
 
-  return candidates.slice(1, 1 + MAX_EXTRA_PAGES);
+  ranked.sort((a, b) => b.score - a.score);
+  return ranked.slice(0, maxExtraPages).map((entry) => entry.url);
 }
 
 async function pollReplayUrl(
@@ -117,9 +141,15 @@ async function pollReplayUrl(
   return null;
 }
 
-export async function runBrowserAudit(rawUrl: string): Promise<BrowserAuditResult> {
+export async function runBrowserAudit(
+  rawUrl: string,
+  options: AuditOptions = {},
+): Promise<BrowserAuditResult> {
+  const startedAt = Date.now();
+  const maxExtraPages = options.maxExtraPages ?? 2;
   const targetUrl = normalizeTargetUrl(rawUrl);
   const origin = new URL(targetUrl).origin;
+  const landingPath = new URL(targetUrl).pathname;
   const isHttps = targetUrl.startsWith("https://");
 
   const solari = new Solari({ apiKey: process.env.SOLARI_API_KEY! });
@@ -131,7 +161,6 @@ export async function runBrowserAudit(rawUrl: string): Promise<BrowserAuditResul
 
   const pages: PageSnapshot[] = [];
   const findings: Finding[] = [];
-
   const sessionId = browser.id;
 
   try {
@@ -141,7 +170,7 @@ export async function runBrowserAudit(rawUrl: string): Promise<BrowserAuditResul
     pages.push(landing);
     findings.push(...findingsFromPage(landing, isHttps));
 
-    const extraUrls = await discoverInternalLinks(page, origin);
+    const extraUrls = await discoverInternalLinks(page, origin, landingPath, maxExtraPages);
     for (const extraUrl of extraUrls) {
       console.log(`browser: capturing ${extraUrl}`);
       try {
@@ -165,8 +194,14 @@ export async function runBrowserAudit(rawUrl: string): Promise<BrowserAuditResul
     await browser.close();
   }
 
-  console.log("browser: polling session replay");
-  const replayUrl = await pollReplayUrl(solari, sessionId);
+  let replayUrl: string | null = null;
+  if (!options.skipReplay) {
+    console.log("browser: polling session replay");
+    replayUrl = await pollReplayUrl(solari, sessionId);
+  } else {
+    console.log("browser: skipping replay poll (--skip-replay)");
+  }
+
   await solari.close();
 
   return {
@@ -174,5 +209,6 @@ export async function runBrowserAudit(rawUrl: string): Promise<BrowserAuditResul
     replayUrl,
     pages,
     findings,
+    durationMs: Date.now() - startedAt,
   };
 }
