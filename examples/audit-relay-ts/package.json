@@ -1,0 +1,20 @@
+{
+  "name": "audit-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Client site audit powered by Solari browser + sandbox",
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts",
+    "audit": "tsx index.ts"
+  },
+  "dependencies": {
+    "@solarisdk/browser": "^0.1.1",
+    "@solarisdk/sdk": "^0.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
