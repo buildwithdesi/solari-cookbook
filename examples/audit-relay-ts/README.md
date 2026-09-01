@@ -22,9 +22,9 @@ Built by [Desi Baker](https://github.com/buildwithdesi) with AI-assisted vibe co
 
 1. **Sandbox phase** — spins up a Solari microVM and runs `curl` for TLS redirect + security headers (HSTS, CSP, X-Frame-Options, etc.).
 2. **Browser phase** — launches a stealth Solari browser with session recording, captures the landing page plus up to two internal pages, screenshots each view, and polls for the replay URL.
-3. **Report** — writes a DA-branded HTML report and JSON summary to `output/` (v1: `runs/{run_id}/` + `manifest.json`).
+3. **Report** — writes run-scoped artifacts under `runs/{run_id}/` and mirrors latest to `output/`.
 
-**v0 today · v1 target:** See `DESIGN.md` for the run envelope and accretion model.
+**Agent entry:** `runs/{run_id}/manifest.json` then `summary.json`.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ export SOLARI_API_KEY=slr_live_...   # console.getsolari.com
 npm run audit -- https://example.com
 ```
 
-Open `output/audit-report.html` when it finishes. Screenshots live in `output/screenshots/`.
+Open `runs/{run_id}/summary.json` after a run. Human mirror: `output/audit-report.html`.
 
 ### Flags
 

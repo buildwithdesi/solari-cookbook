@@ -1,8 +1,18 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { RUN_REL_PATHS, runDir } from "./core/paths.js";
 import { computeScore, dedupeFindings, scoreVerdict, sortFindings } from "./findings.js";
-import type { AuditRelayReport, Finding, PageSnapshot, Severity } from "./types.js";
+import type {
+  AuditRelayReport,
+  BrowserAuditResult,
+  Finding,
+  PageSnapshot,
+  RunStatus,
+  RunSummary,
+  SandboxAuditResult,
+  Severity,
+} from "./types.js";
 
 function escapeHtml(value: string): string {
   return value
@@ -36,6 +46,38 @@ function scoreTone(score: number): string {
   if (score >= 85) return "good";
   if (score >= 65) return "warn";
   return "bad";
+}
+
+function countFindings(findings: Finding[]): RunSummary["counts"] {
+  const counts = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    pass: 0,
+    actionable: 0,
+  };
+  for (const finding of findings) {
+    counts[finding.severity] += 1;
+    if (finding.severity !== "pass") counts.actionable += 1;
+  }
+  return counts;
+}
+
+export function buildSummary(report: AuditRelayReport): RunSummary {
+  const findings = sortFindings(report.findings);
+  return {
+    run_id: report.runId,
+    target_url: report.targetUrl,
+    score: report.score,
+    verdict: report.verdict,
+    status: report.status,
+    counts: countFindings(findings),
+    top_findings: findings
+      .filter((f) => f.severity !== "pass")
+      .slice(0, 5)
+      .map((f) => ({ id: f.id, severity: f.severity, title: f.title })),
+  };
 }
 
 function renderFindingCards(findings: Finding[]): string {
@@ -77,7 +119,7 @@ function renderPassedChecks(findings: Finding[]): string {
     .join("\n");
 }
 
-function renderHeaderTable(headers: AuditRelayReport["sandbox"]["headers"]): string {
+function renderHeaderTable(headers: SandboxAuditResult["headers"]): string {
   return headers
     .map((header) => {
       const status = header.present ? "yes" : "no";
@@ -126,12 +168,10 @@ function renderScreenshots(pages: PageSnapshot[]): string {
 
 export function buildHtmlReport(report: AuditRelayReport): string {
   const findings = sortFindings(report.findings);
-  const criticalCount = findings.filter((f) => f.severity === "critical").length;
-  const highCount = findings.filter((f) => f.severity === "high").length;
-  const mediumCount = findings.filter((f) => f.severity === "medium").length;
-  const lowCount = findings.filter((f) => f.severity === "low").length;
-  const passCount = findings.filter((f) => f.severity === "pass").length;
+  const counts = countFindings(findings);
   const tone = scoreTone(report.score);
+  const pages = report.browser?.pages ?? [];
+  const headers = report.sandbox?.headers ?? [];
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -150,7 +190,6 @@ export function buildHtmlReport(report: AuditRelayReport): string {
       --text: #E8EAF0;
       --muted: #9AA3B2;
       --accent: #00C8FF;
-      --accent-2: #40FF78;
       --critical: #FF5A5A;
       --high: #FF9F43;
       --medium: #FFD166;
@@ -177,11 +216,6 @@ export function buildHtmlReport(report: AuditRelayReport): string {
       border: 1px solid var(--line);
       border-radius: 20px;
       padding: 28px;
-      animation: rise 0.6s ease both;
-    }
-    @keyframes rise {
-      from { opacity: 0; transform: translateY(12px); }
-      to { opacity: 1; transform: translateY(0); }
     }
     .eyebrow {
       font-family: "JetBrains Mono", monospace;
@@ -210,7 +244,6 @@ export function buildHtmlReport(report: AuditRelayReport): string {
       display: grid;
       place-items: center;
       border: 6px solid color-mix(in srgb, var(--${tone}) 70%, var(--line));
-      background: radial-gradient(circle, rgba(255,255,255,0.03), transparent 70%);
     }
     .score-ring strong { font-size: 2rem; line-height: 1; }
     .score-ring span { color: var(--muted); font-size: 0.85rem; }
@@ -235,16 +268,10 @@ export function buildHtmlReport(report: AuditRelayReport): string {
       border: 1px solid var(--line);
       border-radius: 18px;
       padding: 22px;
-      animation: rise 0.7s ease both;
     }
     h2 { margin: 0 0 14px; font-size: 1.25rem; }
     .grid { display: grid; gap: 16px; }
-    .finding {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-      background: rgba(255,255,255,0.02);
-    }
+    .finding { border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
     .finding h3 { margin: 8px 0 6px; font-size: 1rem; }
     .finding-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .pill {
@@ -263,36 +290,17 @@ export function buildHtmlReport(report: AuditRelayReport): string {
     .rec { color: var(--muted); margin-bottom: 0; }
     .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
     table { width: 100%; border-collapse: collapse; font-size: 0.92rem; min-width: 640px; }
-    th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
-    th { color: var(--muted); font-weight: 500; background: rgba(255,255,255,0.02); }
-    tr:last-child td { border-bottom: 0; }
-    tr.no td:first-child { color: var(--high); }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px 12px; text-align: left; }
+    th { color: var(--muted); font-weight: 500; }
     code { font-family: "JetBrains Mono", monospace; font-size: 0.85em; }
-    .status-dot {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      margin-right: 8px;
-      background: var(--bad);
-    }
+    .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; background: var(--bad); }
     .status-dot.yes { background: var(--good); }
     .shots { display: grid; gap: 18px; }
-    .shot img {
-      width: 100%;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      display: block;
-      background: #000;
-    }
+    .shot img { width: 100%; border-radius: 12px; border: 1px solid var(--line); display: block; }
     .shot figcaption { margin-top: 8px; display: grid; gap: 4px; color: var(--muted); font-size: 0.9rem; }
-    .shot-meta { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; }
     .meta { color: var(--muted); font-size: 0.92rem; margin-top: 12px; }
-    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
     .btn {
       display: inline-flex;
-      align-items: center;
-      justify-content: center;
       padding: 12px 18px;
       border-radius: 999px;
       text-decoration: none;
@@ -301,70 +309,36 @@ export function buildHtmlReport(report: AuditRelayReport): string {
     }
     .btn-primary { background: var(--accent); color: #041018; }
     .btn-secondary { border-color: var(--line); color: var(--text); }
-    details.passed {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 12px 14px;
-      background: rgba(255,255,255,0.02);
-    }
-    details.passed summary {
-      cursor: pointer;
-      font-weight: 600;
-      color: var(--pass);
-    }
-    details.passed ul {
-      margin: 12px 0 0;
-      padding-left: 18px;
-      color: var(--muted);
-    }
-    details.passed li { margin-bottom: 10px; }
-    details.passed li strong { display: block; color: var(--text); }
-    footer {
-      margin-top: 28px;
-      text-align: center;
-      color: var(--muted);
-      font-size: 0.9rem;
-    }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+    details.passed { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+    details.passed summary { cursor: pointer; font-weight: 600; color: var(--pass); }
     .empty { color: var(--muted); }
-    @media (max-width: 860px) {
-      .hero { grid-template-columns: 1fr; }
-      .score-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 640px) {
-      .wrap { padding: 20px 14px 48px; }
-      section, .hero { padding: 18px; }
-    }
+    footer { margin-top: 28px; text-align: center; color: var(--muted); font-size: 0.9rem; }
+    @media (max-width: 860px) { .hero { grid-template-columns: 1fr; } .score-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header class="hero">
       <div>
-        <p class="eyebrow">AuditRelay · Solari Browser + Sandbox</p>
+        <p class="eyebrow">AuditRelay · Run ${escapeHtml(report.runId)}</p>
         <h1>${escapeHtml(report.targetUrl)}</h1>
-        <p class="sub">Generated ${escapeHtml(new Date(report.auditedAt).toLocaleString())} · ${Math.round(report.durationMs / 1000)}s total (sandbox ${Math.round(report.sandboxMs / 1000)}s, browser ${Math.round(report.browserMs / 1000)}s)</p>
+        <p class="sub">Generated ${escapeHtml(new Date(report.auditedAt).toLocaleString())} · ${Math.round(report.durationMs / 1000)}s total · status ${escapeHtml(report.status)}</p>
         <p class="verdict">${escapeHtml(report.verdict)}</p>
         <div class="score-row">
-          <div class="stat"><strong>${criticalCount}</strong><span>Critical</span></div>
-          <div class="stat"><strong>${highCount}</strong><span>High</span></div>
-          <div class="stat"><strong>${mediumCount}</strong><span>Medium</span></div>
-          <div class="stat"><strong>${lowCount}</strong><span>Low</span></div>
-          <div class="stat"><strong>${passCount}</strong><span>Passed</span></div>
+          <div class="stat"><strong>${counts.critical}</strong><span>Critical</span></div>
+          <div class="stat"><strong>${counts.high}</strong><span>High</span></div>
+          <div class="stat"><strong>${counts.medium}</strong><span>Medium</span></div>
+          <div class="stat"><strong>${counts.low}</strong><span>Low</span></div>
+          <div class="stat"><strong>${counts.pass}</strong><span>Passed</span></div>
         </div>
         <div class="cta-row">
-          ${report.browser.replayUrl ? `<a class="btn btn-primary" href="${escapeHtml(report.browser.replayUrl)}" target="_blank" rel="noreferrer">Watch Solari replay</a>` : `<span class="btn btn-secondary">Replay unavailable or skipped</span>`}
+          ${report.browser?.replayUrl ? `<a class="btn btn-primary" href="${escapeHtml(report.browser.replayUrl)}" target="_blank" rel="noreferrer">Watch Solari replay</a>` : `<span class="btn btn-secondary">Replay unavailable or skipped</span>`}
           <a class="btn btn-secondary" href="https://digitalalchemy.dev" target="_blank" rel="noreferrer">digitalalchemy.dev</a>
-          <a class="btn btn-secondary" href="https://beacons.ai/dbcreations" target="_blank" rel="noreferrer">Work with Desi</a>
         </div>
-        ${report.browser.replayUrl ? `<p class="meta">Replay links expire. Open soon after the audit run.</p>` : ""}
       </div>
       <div class="score-card">
-        <div class="score-ring">
-          <div>
-            <strong>${report.score}</strong>
-            <span>/ 100</span>
-          </div>
-        </div>
+        <div class="score-ring"><div><strong>${report.score}</strong><span>/ 100</span></div></div>
         <p class="meta" style="margin-top: 12px;">Health score</p>
       </div>
     </header>
@@ -374,120 +348,167 @@ export function buildHtmlReport(report: AuditRelayReport): string {
       <div class="grid">${renderFindingCards(findings)}</div>
     </section>
 
-    <section>
-      <h2>Page inventory</h2>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Title</th><th>Path</th><th>Status</th><th>Scripts</th><th>Forms</th><th>Links</th></tr></thead>
-          <tbody>${renderPageTable(report.browser.pages)}</tbody>
-        </table>
-      </div>
-    </section>
+    ${pages.length > 0 ? `<section><h2>Page inventory</h2><div class="table-wrap"><table><thead><tr><th>Title</th><th>Path</th><th>Status</th><th>Scripts</th><th>Forms</th><th>Links</th></tr></thead><tbody>${renderPageTable(pages)}</tbody></table></div></section>` : ""}
+
+    ${headers.length > 0 ? `<section><h2>Security headers</h2><div class="table-wrap"><table><thead><tr><th>Header</th><th>Present</th><th>Value</th></tr></thead><tbody>${renderHeaderTable(headers)}</tbody></table></div><p class="meta">TLS redirect: ${report.sandbox?.tlsRedirect ? "Yes" : "No"}</p></section>` : ""}
+
+    ${pages.length > 0 ? `<section><h2>Browser captures</h2><div class="shots">${renderScreenshots(pages)}</div></section>` : ""}
 
     <section>
-      <h2>Security headers</h2>
-      <p class="meta" style="margin-top: 0;">Probed from Solari sandbox via curl against HTTPS and HTTP.</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Header</th><th>Present</th><th>Value</th></tr></thead>
-          <tbody>${renderHeaderTable(report.sandbox.headers)}</tbody>
-        </table>
-      </div>
-      <p class="meta">TLS redirect: ${report.sandbox.tlsRedirect ? "Yes" : "No"}${report.sandbox.serverBanner ? ` · Server: ${escapeHtml(report.sandbox.serverBanner)}` : ""}</p>
+      <details class="passed"><summary>${counts.pass} checks passed</summary><ul>${renderPassedChecks(findings)}</ul></details>
     </section>
 
-    <section>
-      <h2>Browser captures</h2>
-      <p class="meta" style="margin-top: 0;">Session ${escapeHtml(report.browser.sessionId)} · ${report.browser.pages.length} page(s) with stealth browser + recording.</p>
-      <div class="shots">${renderScreenshots(report.browser.pages)}</div>
-    </section>
-
-    <section>
-      <details class="passed">
-        <summary>${passCount} checks passed</summary>
-        <ul>${renderPassedChecks(findings)}</ul>
-      </details>
-    </section>
-
-    <footer>
-      Built by <a href="https://github.com/buildwithdesi/solari-cookbook" style="color: var(--accent);">Desi Baker</a> for the Solari hiring challenge · Powered by <a href="https://getsolari.com" style="color: var(--accent);">Solari</a>
-    </footer>
+    <footer>Run ${escapeHtml(report.runId)} · Powered by <a href="https://getsolari.com" style="color: var(--accent);">Solari</a></footer>
   </div>
 </body>
 </html>`;
 }
 
+function stripPageForObservation(page: PageSnapshot): Omit<PageSnapshot, "screenshotBase64"> {
+  return {
+    url: page.url,
+    title: page.title,
+    status: page.status,
+    screenshotFile: page.screenshotFile,
+    metaDescription: page.metaDescription,
+    h1: page.h1,
+    scriptCount: page.scriptCount,
+    externalScriptHosts: page.externalScriptHosts,
+    formCount: page.formCount,
+    passwordFieldCount: page.passwordFieldCount,
+    linkCount: page.linkCount,
+  };
+}
+
 async function writeScreenshots(
   pages: PageSnapshot[],
-  outputDir: string,
+  screenshotDir: string,
+  relativePrefix: string,
 ): Promise<PageSnapshot[]> {
-  const screenshotDir = path.join(outputDir, "screenshots");
   await mkdir(screenshotDir, { recursive: true });
 
   const updated: PageSnapshot[] = [];
   for (let index = 0; index < pages.length; index += 1) {
     const page = pages[index];
     const filename = `page-${index + 1}.png`;
-    const filePath = path.join(screenshotDir, filename);
-    await writeFile(filePath, Buffer.from(page.screenshotBase64, "base64"));
+    await writeFile(path.join(screenshotDir, filename), Buffer.from(page.screenshotBase64, "base64"));
     updated.push({
       ...page,
-      screenshotFile: `./screenshots/${filename}`,
+      screenshotFile: `${relativePrefix}${filename}`,
     });
   }
   return updated;
 }
 
-export async function writeReportArtifacts(
-  report: AuditRelayReport,
-  outputDir: string,
-): Promise<{ htmlPath: string; jsonPath: string }> {
-  await mkdir(outputDir, { recursive: true });
+export interface RunArtifactPaths {
+  manifestPaths: {
+    summary: string;
+    findings: string;
+    sandboxObservation: string;
+    browserObservation: string;
+    htmlReport: string;
+  };
+}
 
-  const pagesWithFiles = await writeScreenshots(report.browser.pages, outputDir);
+export async function writeRunArtifacts(
+  projectRoot: string,
+  runId: string,
+  report: AuditRelayReport,
+): Promise<RunArtifactPaths> {
+  const dir = runDir(projectRoot, runId);
+  const screenshotDir = path.join(dir, RUN_REL_PATHS.screenshotDir);
+  const htmlDir = path.join(dir, "artifacts/render");
+
+  await mkdir(screenshotDir, { recursive: true });
+  await mkdir(htmlDir, { recursive: true });
+  await mkdir(path.join(dir, "observations"), { recursive: true });
+  await mkdir(path.join(dir, "artifacts/browser"), { recursive: true });
+
+  let pages = report.browser?.pages ?? [];
+  if (pages.length > 0) {
+    pages = await writeScreenshots(pages, screenshotDir, "../screenshots/");
+  }
+
   const reportForHtml: AuditRelayReport = {
     ...report,
-    browser: {
-      ...report.browser,
-      pages: pagesWithFiles,
-    },
+    browser: report.browser ? { ...report.browser, pages } : null,
   };
 
-  const htmlPath = path.join(outputDir, "audit-report.html");
-  const jsonPath = path.join(outputDir, "audit-report.json");
+  if (report.sandbox) {
+    const sandboxObs = {
+      headers: report.sandbox.headers,
+      tlsRedirect: report.sandbox.tlsRedirect,
+      serverBanner: report.sandbox.serverBanner,
+      durationMs: report.sandbox.durationMs,
+    };
+    await writeFile(
+      path.join(dir, RUN_REL_PATHS.sandboxObservation),
+      JSON.stringify(sandboxObs, null, 2),
+      "utf8",
+    );
+  }
 
-  const jsonSafe = {
-    ...reportForHtml,
-    browser: {
-      ...reportForHtml.browser,
-      pages: reportForHtml.browser.pages.map((page) => ({
-        ...page,
-        screenshotBase64: `[${page.screenshotBase64.length} chars omitted]`,
-        screenshotFile: page.screenshotFile,
-      })),
+  if (report.browser) {
+    const browserObs = {
+      sessionId: report.browser.sessionId,
+      replayUrl: report.browser.replayUrl,
+      durationMs: report.browser.durationMs,
+      pages: pages.map((page) => stripPageForObservation(page)),
+    };
+    await writeFile(
+      path.join(dir, RUN_REL_PATHS.browserObservation),
+      JSON.stringify(browserObs, null, 2),
+      "utf8",
+    );
+
+    if (report.browser.replayUrl) {
+      await writeFile(path.join(dir, RUN_REL_PATHS.replayUrl), report.browser.replayUrl, "utf8");
+    }
+  }
+
+  await writeFile(path.join(dir, RUN_REL_PATHS.findings), JSON.stringify(report.findings, null, 2), "utf8");
+
+  const summary = buildSummary(report);
+  await writeFile(path.join(dir, RUN_REL_PATHS.summary), JSON.stringify(summary, null, 2), "utf8");
+
+  await writeFile(
+    path.join(dir, RUN_REL_PATHS.htmlReport),
+    buildHtmlReport(reportForHtml),
+    "utf8",
+  );
+
+  return {
+    manifestPaths: {
+      summary: RUN_REL_PATHS.summary,
+      findings: RUN_REL_PATHS.findings,
+      sandboxObservation: RUN_REL_PATHS.sandboxObservation,
+      browserObservation: RUN_REL_PATHS.browserObservation,
+      htmlReport: RUN_REL_PATHS.htmlReport,
     },
   };
-
-  await writeFile(htmlPath, buildHtmlReport(reportForHtml), "utf8");
-  await writeFile(jsonPath, JSON.stringify(jsonSafe, null, 2), "utf8");
-
-  return { htmlPath, jsonPath };
 }
 
 export function finalizeReport(
+  runId: string,
   targetUrl: string,
   startedAt: number,
-  browser: AuditRelayReport["browser"],
-  sandbox: AuditRelayReport["sandbox"],
+  browser: BrowserAuditResult | null,
+  sandbox: SandboxAuditResult | null,
+  status: RunStatus,
 ): AuditRelayReport {
-  const findings = dedupeFindings(sortFindings([...browser.findings, ...sandbox.findings]));
+  const browserFindings = browser?.findings ?? [];
+  const sandboxFindings = sandbox?.findings ?? [];
+  const findings = dedupeFindings(sortFindings([...browserFindings, ...sandboxFindings]));
   const score = computeScore(findings);
+
   return {
+    runId,
     targetUrl,
     auditedAt: new Date().toISOString(),
     durationMs: Date.now() - startedAt,
-    sandboxMs: sandbox.durationMs,
-    browserMs: browser.durationMs,
+    sandboxMs: sandbox?.durationMs ?? 0,
+    browserMs: browser?.durationMs ?? 0,
+    status,
     browser,
     sandbox,
     findings,

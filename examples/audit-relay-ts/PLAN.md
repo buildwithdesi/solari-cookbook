@@ -24,7 +24,7 @@ Deliverables:
 
 ## Phase 1 — Run envelope (highest leverage)
 
-**Problem:** `output/` overwrites every run. Agents lose history and cannot diff.
+**Status:** Done
 
 **Work:**
 

@@ -70,9 +70,11 @@ npm run diff -- runs/run-a runs/run-b                               # check_id r
 
 | Order | File | Why |
 |-------|------|-----|
-| 1 | `output/audit-report.json` | score, findings, timings |
-| 2 | `output/audit-report.html` | only if human needs visual report |
-| 3 | `output/screenshots/` | only if finding needs visual verify |
+| 1 | `runs/{run_id}/manifest.json` | status, phases, paths, resume |
+| 2 | `runs/{run_id}/summary.json` | score, verdict, counts |
+| 3 | `runs/{run_id}/findings.json` | full finding list |
+| 4 | observations / screenshots | only if needed |
+| 5 | `output/audit-report.html` | human mirror of latest run |
 
 **v1 (target):**
 
