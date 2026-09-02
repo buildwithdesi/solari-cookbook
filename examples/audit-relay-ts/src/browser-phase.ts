@@ -1,7 +1,7 @@
 import { Solari } from "@solarisdk/browser";
 
-import { findingsFromPage } from "./findings.js";
-import type { AuditOptions, BrowserAuditResult, Finding, PageSnapshot } from "./types.js";
+import { normalizeTargetUrl } from "./core/run-id.js";
+import type { AuditOptions, BrowserObservation, PageSnapshot } from "./types.js";
 
 const PRIORITY_SEGMENTS = [
   "about",
@@ -13,14 +13,6 @@ const PRIORITY_SEGMENTS = [
   "services",
   "product",
 ];
-
-function normalizeTargetUrl(raw: string): string {
-  const trimmed = raw.trim();
-  if (!/^https?:\/\//i.test(trimmed)) {
-    return `https://${trimmed}`;
-  }
-  return trimmed;
-}
 
 function scoreInternalPath(pathname: string): number {
   const lower = pathname.toLowerCase();
@@ -141,16 +133,15 @@ async function pollReplayUrl(
   return null;
 }
 
-export async function runBrowserAudit(
+export async function observeBrowser(
   rawUrl: string,
   options: AuditOptions = {},
-): Promise<BrowserAuditResult> {
+): Promise<BrowserObservation> {
   const startedAt = Date.now();
   const maxExtraPages = options.maxExtraPages ?? 2;
   const targetUrl = normalizeTargetUrl(rawUrl);
   const origin = new URL(targetUrl).origin;
   const landingPath = new URL(targetUrl).pathname;
-  const isHttps = targetUrl.startsWith("https://");
 
   const solari = new Solari({ apiKey: process.env.SOLARI_API_KEY! });
   const browser = await solari.launch({
@@ -160,31 +151,23 @@ export async function runBrowserAudit(
   });
 
   const pages: PageSnapshot[] = [];
-  const findings: Finding[] = [];
+  const pageErrors: BrowserObservation["pageErrors"] = [];
   const sessionId = browser.id;
 
   try {
     const page = await browser.newPage();
     console.log("browser: capturing landing page");
-    const landing = await capturePage(page, targetUrl);
-    pages.push(landing);
-    findings.push(...findingsFromPage(landing, isHttps));
+    pages.push(await capturePage(page, targetUrl));
 
     const extraUrls = await discoverInternalLinks(page, origin, landingPath, maxExtraPages);
     for (const extraUrl of extraUrls) {
       console.log(`browser: capturing ${extraUrl}`);
       try {
-        const snapshot = await capturePage(page, extraUrl);
-        pages.push(snapshot);
-        findings.push(...findingsFromPage(snapshot, extraUrl.startsWith("https://")));
+        pages.push(await capturePage(page, extraUrl));
       } catch (error) {
-        findings.push({
-          id: `page-error-${extraUrl}`,
-          severity: "low",
-          category: "Coverage",
-          title: "Secondary page failed to load",
-          detail: `${extraUrl}: ${error instanceof Error ? error.message : String(error)}`,
-          recommendation: "Check routing, auth walls, or bot protection on inner pages.",
+        pageErrors.push({
+          url: extraUrl,
+          message: error instanceof Error ? error.message : String(error),
         });
       }
     }
@@ -205,10 +188,15 @@ export async function runBrowserAudit(
   await solari.close();
 
   return {
+    targetUrl,
     sessionId,
     replayUrl,
     pages,
-    findings,
+    pageErrors,
     durationMs: Date.now() - startedAt,
+    probedAt: new Date().toISOString(),
   };
 }
+
+/** @deprecated use observeBrowser */
+export const runBrowserAudit = observeBrowser;

@@ -11,15 +11,33 @@ import {
   manifestRelativePath,
   skipPhase,
   startPhase,
+  updateManifest,
 } from "./src/core/manifest.js";
 import { syncLatestRunToOutput } from "./src/core/output-sync.js";
 import { generateRunId, normalizeTargetUrl } from "./src/core/run-id.js";
-import { runBrowserAudit } from "./src/browser-phase.js";
-import { finalizeReport, writeRunArtifacts } from "./src/report.js";
-import { runSandboxAudit } from "./src/sandbox-phase.js";
-import type { AuditOptions, RunStatus } from "./src/types.js";
+import {
+  loadManifest,
+  loadObservationBundle,
+  normalizeRunId,
+  writeBrowserObservation,
+  writeSandboxObservation,
+} from "./src/core/run-store.js";
+import { observeBrowser } from "./src/browser-phase.js";
+import { getRegistryVersion, interpretObservations } from "./src/interpret/engine.js";
+import { buildReport, persistBrowserScreenshots, writeRunArtifacts } from "./src/report.js";
+import { observeSandbox } from "./src/sandbox-phase.js";
+import type { AuditOptions, PipelinePhase, RunManifest, RunStatus } from "./src/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const DEFAULT_REPLAY_PHASES: PipelinePhase[] = ["interpret", "score", "render"];
+const ALL_PHASES: PipelinePhase[] = [
+  "observe.sandbox",
+  "observe.browser",
+  "interpret",
+  "score",
+  "render",
+];
 
 function loadEnvFile(): void {
   const envPath = path.join(__dirname, ".env");
@@ -38,21 +56,63 @@ function loadEnvFile(): void {
   }
 }
 
-function parseArgs(argv: string[]): { target: string; options: AuditOptions } {
+function parsePhases(raw: string | undefined, fromRun: boolean): PipelinePhase[] {
+  if (!raw) {
+    return fromRun ? DEFAULT_REPLAY_PHASES : ALL_PHASES;
+  }
+
+  const parsed = raw
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean) as PipelinePhase[];
+
+  for (const phase of parsed) {
+    if (!ALL_PHASES.includes(phase)) {
+      console.error(`Unknown phase: ${phase}`);
+      process.exit(1);
+    }
+  }
+
+  return parsed;
+}
+
+function parseArgs(argv: string[]): { target: string; options: AuditOptions; phases: PipelinePhase[] } {
   const flags = new Set(argv.filter((arg) => arg.startsWith("--")));
   const positional = argv.filter((arg) => !arg.startsWith("--"));
+
+  let fromRun: string | undefined;
+  let phasesRaw: string | undefined;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--from-run" && argv[index + 1]) {
+      fromRun = argv[++index];
+    }
+    if (arg === "--phases") {
+      const parts: string[] = [];
+      while (index + 1 < argv.length && !argv[index + 1].startsWith("--")) {
+        parts.push(argv[++index]);
+      }
+      phasesRaw = parts.join(",");
+    }
+  }
 
   const options: AuditOptions = {
     skipReplay: flags.has("--skip-replay") || process.env.AUDIT_SKIP_REPLAY === "1",
     maxExtraPages: flags.has("--landing-only") || process.env.AUDIT_LANDING_ONLY === "1" ? 0 : 2,
-    depth: process.env.AUDIT_DEPTH === "quick" || process.env.AUDIT_DEPTH === "deep"
-      ? process.env.AUDIT_DEPTH
-      : "standard",
+    depth:
+      process.env.AUDIT_DEPTH === "quick" || process.env.AUDIT_DEPTH === "deep"
+        ? process.env.AUDIT_DEPTH
+        : "standard",
+    fromRun: fromRun ? normalizeRunId(fromRun) : undefined,
   };
+
+  const phases = parsePhases(phasesRaw ?? options.phases?.join(","), Boolean(options.fromRun));
 
   return {
     target: positional[0] ?? "",
     options,
+    phases,
   };
 }
 
@@ -62,18 +122,22 @@ AuditRelay — client site audit on Solari browser + sandbox
 
 Usage:
   npm run audit -- https://example.com
+  npm run audit -- --from-run runs/{run_id} --phases interpret,score,render
 
 Agent read order after run:
   runs/{run_id}/manifest.json
   runs/{run_id}/summary.json
 
 Flags / env:
+  --from-run <path>                 Re-run phases on cached observations
+  --phases observe.sandbox,...      Phase list (default: all, or interpret,score,render with --from-run)
+  --skip-replay
+  --landing-only
   AUDIT_SKIP_REPLAY=1
   AUDIT_LANDING_ONLY=1
-  AUDIT_DEPTH=standard|quick|deep   (quick = sandbox only, phase 3)
+  AUDIT_DEPTH=standard|quick|deep   (quick = sandbox only)
 
-Requires:
-  SOLARI_API_KEY=slr_live_...
+Requires SOLARI_API_KEY for observe phases only.
 `);
   process.exit(1);
 }
@@ -88,25 +152,46 @@ function resolveRunStatus(
   return "failed";
 }
 
+function wantsPhase(phases: PipelinePhase[], phase: PipelinePhase): boolean {
+  return phases.includes(phase);
+}
+
+function needsSolari(phases: PipelinePhase[]): boolean {
+  return phases.includes("observe.sandbox") || phases.includes("observe.browser");
+}
+
 async function main(): Promise<void> {
   loadEnvFile();
 
-  const { target, options } = parseArgs(process.argv.slice(2));
-  if (!target) usage();
+  const { target, options, phases } = parseArgs(process.argv.slice(2));
+  if (!target && !options.fromRun) usage();
 
-  if (!process.env.SOLARI_API_KEY) {
+  if (needsSolari(phases) && !process.env.SOLARI_API_KEY) {
     console.error("Missing SOLARI_API_KEY. Export it or create a .env file.");
     process.exit(1);
   }
 
   const startedAt = Date.now();
-  const normalizedTarget = normalizeTargetUrl(target);
-  const runId = generateRunId(normalizedTarget);
-  let manifest = await createRunManifest(__dirname, runId, normalizedTarget, options);
+  const registryVersion = getRegistryVersion();
+
+  let runId: string;
+  let manifest: RunManifest;
+  let normalizedTarget: string;
+
+  if (options.fromRun) {
+    runId = options.fromRun;
+    manifest = await loadManifest(__dirname, runId);
+    normalizedTarget = manifest.target_url;
+  } else {
+    normalizedTarget = normalizeTargetUrl(target);
+    runId = generateRunId(normalizedTarget);
+    manifest = await createRunManifest(__dirname, runId, normalizedTarget, options);
+  }
 
   console.log(`\nAuditRelay run ${runId}`);
   console.log(`target: ${normalizedTarget}`);
   console.log(`depth : ${manifest.depth}`);
+  console.log(`phases: ${phases.join(", ")}`);
   if (options.skipReplay) console.log("mode  : skip replay polling");
   if (options.maxExtraPages === 0) console.log("mode  : landing page only");
   console.log("");
@@ -116,32 +201,42 @@ async function main(): Promise<void> {
   let sandboxError: string | null = null;
   let browserError: string | null = null;
 
-  const runBrowser = options.depth !== "quick";
+  const runBrowserObserve =
+    wantsPhase(phases, "observe.browser") && manifest.depth !== "quick";
 
-  if (!runBrowser) {
+  if (!wantsPhase(phases, "observe.browser") && options.fromRun) {
+    // Leave manifest as-is when replaying interpret-only.
+  } else if (!runBrowserObserve && wantsPhase(phases, "observe.sandbox")) {
     manifest = await skipPhase(__dirname, manifest, "observe.browser");
   }
 
-  manifest = await startPhase(__dirname, manifest, "observe.sandbox");
-  try {
-    console.log("Phase observe.sandbox...");
-    sandbox = await runSandboxAudit(normalizedTarget);
-    manifest = await completePhase(__dirname, manifest, "observe.sandbox", {
-      duration_ms: sandbox.durationMs,
-      observation: "observations/sandbox.json",
-    });
-    console.log(`  sandbox done (${Math.round(sandbox.durationMs / 1000)}s)`);
-  } catch (error) {
-    sandboxError = error instanceof Error ? error.message : String(error);
-    manifest = await failPhase(__dirname, manifest, "observe.sandbox", sandboxError);
-    console.error(`  sandbox failed: ${sandboxError}`);
+  if (wantsPhase(phases, "observe.sandbox")) {
+    manifest = await startPhase(__dirname, manifest, "observe.sandbox");
+    try {
+      console.log("Phase observe.sandbox...");
+      sandbox = await observeSandbox(normalizedTarget);
+      await writeSandboxObservation(__dirname, runId, sandbox);
+      manifest = await completePhase(__dirname, manifest, "observe.sandbox", {
+        duration_ms: sandbox.durationMs,
+        observation: "observations/sandbox.json",
+      });
+      console.log(`  sandbox done (${Math.round(sandbox.durationMs / 1000)}s)`);
+    } catch (error) {
+      sandboxError = error instanceof Error ? error.message : String(error);
+      manifest = await failPhase(__dirname, manifest, "observe.sandbox", sandboxError);
+      console.error(`  sandbox failed: ${sandboxError}`);
+    }
+  } else {
+    sandbox = (await loadObservationBundle(__dirname, runId)).sandbox;
   }
 
-  if (runBrowser) {
+  if (runBrowserObserve) {
     manifest = await startPhase(__dirname, manifest, "observe.browser");
     try {
       console.log("Phase observe.browser...");
-      browser = await runBrowserAudit(normalizedTarget, options);
+      browser = await observeBrowser(normalizedTarget, options);
+      browser = await persistBrowserScreenshots(__dirname, runId, browser);
+      await writeBrowserObservation(__dirname, runId, browser);
       manifest = await completePhase(__dirname, manifest, "observe.browser", {
         duration_ms: browser.durationMs,
         observation: "observations/browser.json",
@@ -152,10 +247,17 @@ async function main(): Promise<void> {
       manifest = await failPhase(__dirname, manifest, "observe.browser", browserError);
       console.error(`  browser failed: ${browserError}`);
     }
+  } else if (wantsPhase(phases, "interpret") || wantsPhase(phases, "score") || wantsPhase(phases, "render")) {
+    browser = (await loadObservationBundle(__dirname, runId)).browser;
   }
 
-  const runStatus = resolveRunStatus(Boolean(sandbox), Boolean(browser), !runBrowser);
-  if (runStatus === "failed") {
+  const observeAttempted =
+    wantsPhase(phases, "observe.sandbox") || wantsPhase(phases, "observe.browser");
+  const runStatus = observeAttempted
+    ? resolveRunStatus(Boolean(sandbox), Boolean(browser), !runBrowserObserve)
+    : manifest.status;
+
+  if (observeAttempted && runStatus === "failed") {
     manifest = await finalizeRun(__dirname, manifest, "failed", Date.now() - startedAt, {
       solari_browser_ms: browser?.durationMs ?? 0,
       solari_sandbox_ms: sandbox?.durationMs ?? 0,
@@ -166,25 +268,52 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  manifest = await startPhase(__dirname, manifest, "interpret");
-  const report = finalizeReport(runId, normalizedTarget, startedAt, browser, sandbox, runStatus);
-  manifest = await completePhase(__dirname, manifest, "interpret", {
-    duration_ms: 0,
-    output: "findings.json",
-  });
+  let findings = null;
+  if (wantsPhase(phases, "interpret")) {
+    manifest = await startPhase(__dirname, manifest, "interpret");
+    const bundle = {
+      targetUrl: normalizedTarget,
+      sandbox,
+      browser,
+    };
+    findings = interpretObservations(bundle);
+    manifest = await updateManifest(__dirname, manifest, { registry_version: registryVersion });
+    manifest = await completePhase(__dirname, manifest, "interpret", {
+      duration_ms: 0,
+      output: "findings.json",
+    });
+    console.log(`Phase interpret: ${findings.length} findings`);
+  }
 
-  manifest = await startPhase(__dirname, manifest, "score");
-  manifest = await completePhase(__dirname, manifest, "score", {
-    duration_ms: 0,
-    output: "summary.json",
-  });
+  const report = buildReport(
+    runId,
+    normalizedTarget,
+    startedAt,
+    sandbox,
+    browser,
+    findings ?? [],
+    runStatus,
+    registryVersion,
+  );
 
-  manifest = await startPhase(__dirname, manifest, "render");
-  const artifactPaths = await writeRunArtifacts(__dirname, runId, report);
-  manifest = await completePhase(__dirname, manifest, "render", {
-    duration_ms: 0,
-    artifact: artifactPaths.manifestPaths.htmlReport,
-  });
+  if (wantsPhase(phases, "score")) {
+    manifest = await startPhase(__dirname, manifest, "score");
+    manifest = await completePhase(__dirname, manifest, "score", {
+      duration_ms: 0,
+      output: "summary.json",
+    });
+    console.log(`Phase score: ${report.score}/100`);
+  }
+
+  if (wantsPhase(phases, "render")) {
+    manifest = await startPhase(__dirname, manifest, "render");
+    const artifactPaths = await writeRunArtifacts(__dirname, runId, report);
+    manifest = await completePhase(__dirname, manifest, "render", {
+      duration_ms: 0,
+      artifact: artifactPaths.manifestPaths.htmlReport,
+    });
+    console.log("Phase render: report.html written");
+  }
 
   manifest = await finalizeRun(__dirname, manifest, runStatus, report.durationMs, {
     solari_browser_ms: report.browserMs,
@@ -192,34 +321,36 @@ async function main(): Promise<void> {
     replay_polled: Boolean(browser?.replayUrl),
   });
 
-  await appendRunIndex(__dirname, {
-    run_id: runId,
-    target_host: manifest.target_host,
-    target_url: manifest.target_url,
-    at: manifest.completed_at ?? new Date().toISOString(),
-    score: report.score,
-    status: runStatus,
-    depth: manifest.depth,
-    manifest: manifestRelativePath(runId),
-  });
+  if (wantsPhase(phases, "render")) {
+    await appendRunIndex(__dirname, {
+      run_id: runId,
+      target_host: manifest.target_host,
+      target_url: manifest.target_url,
+      at: manifest.completed_at ?? new Date().toISOString(),
+      score: report.score,
+      status: runStatus,
+      depth: manifest.depth,
+      manifest: manifestRelativePath(runId),
+    });
 
-  const { outputDir } = await syncLatestRunToOutput(__dirname, runId);
-  const actionable = report.findings.filter((f) => f.severity !== "pass").length;
+    const { outputDir } = await syncLatestRunToOutput(__dirname, runId);
+    const actionable = report.findings.filter((f) => f.severity !== "pass").length;
 
-  console.log("\nAuditRelay complete");
-  console.log(`  run_id     : ${runId}`);
-  console.log(`  status     : ${runStatus}`);
-  console.log(`  score      : ${report.score}/100`);
-  console.log(`  verdict    : ${report.verdict}`);
-  console.log(`  findings   : ${actionable} actionable, ${report.findings.length - actionable} passed`);
-  console.log(`  manifest   : runs/${runId}/manifest.json`);
-  console.log(`  summary    : runs/${runId}/summary.json`);
-  console.log(`  html       : runs/${runId}/artifacts/render/report.html`);
-  console.log(`  latest     : output/latest.json`);
-  console.log(`  output     : ${outputDir}`);
-  if (browser?.replayUrl) console.log(`  replay     : ${browser.replayUrl}`);
-  if (sandboxError) console.log(`  sandbox err: ${sandboxError}`);
-  if (browserError) console.log(`  browser err: ${browserError}`);
+    console.log("\nAuditRelay complete");
+    console.log(`  run_id     : ${runId}`);
+    console.log(`  status     : ${runStatus}`);
+    console.log(`  score      : ${report.score}/100`);
+    console.log(`  verdict    : ${report.verdict}`);
+    console.log(`  findings   : ${actionable} actionable, ${report.findings.length - actionable} passed`);
+    console.log(`  manifest   : runs/${runId}/manifest.json`);
+    console.log(`  summary    : runs/${runId}/summary.json`);
+    console.log(`  html       : runs/${runId}/artifacts/render/report.html`);
+    console.log(`  latest     : output/latest.json`);
+    console.log(`  output     : ${outputDir}`);
+    if (browser?.replayUrl) console.log(`  replay     : ${browser.replayUrl}`);
+    if (sandboxError) console.log(`  sandbox err: ${sandboxError}`);
+    if (browserError) console.log(`  browser err: ${browserError}`);
+  }
 }
 
 main().catch((error) => {

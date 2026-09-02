@@ -50,16 +50,16 @@ $env:AUDIT_SKIP_REPLAY='1'; npm run audit -- https://example.com
 $env:AUDIT_LANDING_ONLY='1'; npm run audit -- https://example.com
 ```
 
-### v1 (target — prefer when implemented)
+### v1 (re-interpret cached runs — available now)
 
 ```powershell
+npm run audit -- --from-run runs/20260901T070508Z-example-com-3f25 --phases interpret,score,render
 $env:AUDIT_DEPTH='quick'; npm run audit -- https://example.com
 $env:AUDIT_DEPTH='standard'; npm run audit -- https://digitalalchemy.dev
 ```
 
 ```bash
-npm run audit -- https://example.com --from-run runs/20260901T.../  # re-interpret only
-npm run diff -- runs/run-a runs/run-b                               # check_id regression
+npm run diff -- runs/run-a runs/run-b                               # check_id regression (Phase 4)
 ```
 
 ---

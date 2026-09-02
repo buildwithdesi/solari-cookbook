@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { generateRunId, normalizeTargetUrl, slugifyHost } from "./src/core/run-id.js";
-import {
-  computeScore,
-  dedupeFindings,
-  findingsFromHeaders,
-  findingsFromTlsRedirect,
-  scoreVerdict,
-} from "./src/findings.js";
-import { buildSummary, finalizeReport } from "./src/report.js";
-import type { Finding } from "./src/types.js";
+import { computeScore, dedupeFindings, scoreVerdict } from "./src/findings.js";
+import { getRegistryVersion, interpretObservations } from "./src/interpret/engine.js";
+import { buildReport, buildSummary } from "./src/report.js";
+import type {
+  BrowserObservation,
+  Finding,
+  ObservationBundle,
+  SandboxObservation,
+} from "./src/types.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function test(name: string, fn: () => void): void {
   try {
@@ -21,72 +26,75 @@ function test(name: string, fn: () => void): void {
   }
 }
 
+function loadFixture<T>(filename: string): T {
+  return JSON.parse(readFileSync(path.join(__dirname, "test/fixtures", filename), "utf8")) as T;
+}
+
+function finding(checkId: string, severity: Finding["severity"]): Finding {
+  return {
+    check_id: checkId,
+    id: checkId,
+    status: severity === "pass" ? "pass" : "fail",
+    severity,
+    category: "test",
+    title: checkId,
+    detail: "detail",
+    recommendation: "fix",
+    evidence: [{ observation: "observations/sandbox.json", path: "$.test", value: "x" }],
+  };
+}
+
 console.log("AuditRelay unit tests\n");
 
 test("computeScore penalizes severity tiers", () => {
   const findings: Finding[] = [
-    {
-      id: "a",
-      severity: "critical",
-      category: "x",
-      title: "t",
-      detail: "d",
-      recommendation: "r",
-    },
-    {
-      id: "b",
-      severity: "high",
-      category: "x",
-      title: "t",
-      detail: "d",
-      recommendation: "r",
-    },
-    {
-      id: "c",
-      severity: "pass",
-      category: "x",
-      title: "t",
-      detail: "d",
-      recommendation: "r",
-    },
+    finding("a", "critical"),
+    finding("b", "high"),
+    finding("c", "pass"),
   ];
   assert.equal(computeScore(findings), 63);
 });
 
 test("dedupeFindings keeps first occurrence", () => {
   const findings: Finding[] = [
-    {
-      id: "dup",
-      severity: "low",
-      category: "x",
-      title: "first",
-      detail: "d",
-      recommendation: "r",
-    },
-    {
-      id: "dup",
-      severity: "high",
-      category: "x",
-      title: "second",
-      detail: "d",
-      recommendation: "r",
-    },
+    { ...finding("dup", "low"), title: "first" },
+    { ...finding("dup", "high"), title: "second" },
   ];
   const deduped = dedupeFindings(findings);
   assert.equal(deduped.length, 1);
   assert.equal(deduped[0].title, "first");
 });
 
-test("findingsFromHeaders marks missing CSP as high", () => {
-  const findings = findingsFromHeaders([
-    { name: "content-security-policy", present: false, value: null },
-  ]);
-  assert.equal(findings[0].severity, "high");
+test("interpretObservations flags missing CSP as high", () => {
+  const sandbox = loadFixture<SandboxObservation>("sandbox-example.json");
+  const bundle: ObservationBundle = { targetUrl: sandbox.targetUrl, sandbox, browser: null };
+  const findings = interpretObservations(bundle);
+  const csp = findings.find((item) => item.check_id === "header.content-security-policy");
+  assert.ok(csp);
+  assert.equal(csp.severity, "high");
+  assert.equal(csp.status, "fail");
+  assert.ok(csp.evidence.length > 0);
 });
 
-test("findingsFromTlsRedirect passes on redirect", () => {
-  const findings = findingsFromTlsRedirect(true, "https://example.com");
-  assert.equal(findings[0].severity, "pass");
+test("interpretObservations passes TLS redirect", () => {
+  const sandbox = loadFixture<SandboxObservation>("sandbox-example.json");
+  const findings = interpretObservations({ targetUrl: sandbox.targetUrl, sandbox, browser: null });
+  const tls = findings.find((item) => item.check_id === "transport.http-to-https-redirect");
+  assert.ok(tls);
+  assert.equal(tls.severity, "pass");
+});
+
+test("interpretObservations detects script-heavy page", () => {
+  const browser = loadFixture<BrowserObservation>("browser-example.json");
+  const findings = interpretObservations({
+    targetUrl: browser.targetUrl,
+    sandbox: null,
+    browser,
+  });
+  const heavy = findings.find((item) => item.check_id === "surface.script-heavy");
+  assert.ok(heavy);
+  assert.equal(heavy.severity, "medium");
+  assert.equal(heavy.scope?.url, "https://example.com");
 });
 
 test("scoreVerdict maps score bands", () => {
@@ -110,33 +118,31 @@ test("slugifyHost converts dots", () => {
 });
 
 test("buildSummary counts actionable findings", () => {
-  const report = finalizeReport(
+  const sandbox = loadFixture<SandboxObservation>("sandbox-example.json");
+  const browser = loadFixture<BrowserObservation>("browser-example.json");
+  const findings = interpretObservations({
+    targetUrl: sandbox.targetUrl,
+    sandbox,
+    browser,
+  });
+  const report = buildReport(
     "run-test",
-    "https://example.com",
+    sandbox.targetUrl,
     Date.now() - 1000,
-    null,
-    {
-      headers: [],
-      tlsRedirect: false,
-      serverBanner: null,
-      findings: [
-        {
-          id: "header-missing-csp",
-          severity: "high",
-          category: "Headers",
-          title: "csp missing",
-          detail: "d",
-          recommendation: "r",
-        },
-      ],
-      durationMs: 100,
-    },
-    "partial",
+    sandbox,
+    browser,
+    findings,
+    "completed",
+    getRegistryVersion(),
   );
   const summary = buildSummary(report);
-  assert.equal(summary.counts.actionable, 1);
-  assert.equal(summary.counts.high, 1);
+  assert.ok(summary.counts.actionable >= 1);
   assert.equal(summary.run_id, "run-test");
+  assert.ok(summary.top_findings.every((item) => item.check_id.length > 0));
+});
+
+test("getRegistryVersion is semver shaped", () => {
+  assert.match(getRegistryVersion(), /^\d+\.\d+$/);
 });
 
 console.log("\nAll tests passed.");

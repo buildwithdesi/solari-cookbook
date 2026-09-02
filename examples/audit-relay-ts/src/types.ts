@@ -1,5 +1,7 @@
 export type Severity = "critical" | "high" | "medium" | "low" | "pass";
 
+export type FindingStatus = "pass" | "fail";
+
 export type AuditDepth = "quick" | "standard" | "deep";
 
 export type RunStatus = "pending" | "running" | "completed" | "partial" | "failed";
@@ -12,6 +14,8 @@ export type RunPhaseId =
   | "render";
 
 export type PhaseStatus = "pending" | "running" | "completed" | "skipped" | "failed";
+
+export type PipelinePhase = "observe.sandbox" | "observe.browser" | "interpret" | "score" | "render";
 
 export interface RunPhaseRecord {
   id: RunPhaseId;
@@ -47,6 +51,7 @@ export interface RunManifest {
   phases: RunPhaseRecord[];
   agent_read_order: string[];
   resume: { from_phase: RunPhaseId; reason: string } | null;
+  registry_version?: string;
 }
 
 export interface RunSummary {
@@ -64,19 +69,30 @@ export interface RunSummary {
     actionable: number;
   };
   top_findings: Array<{
+    check_id: string;
     id: string;
     severity: Severity;
     title: string;
   }>;
 }
 
+export interface FindingEvidence {
+  observation: string;
+  path: string;
+  value?: string;
+}
+
 export interface Finding {
+  check_id: string;
   id: string;
+  status: FindingStatus;
   severity: Severity;
   category: string;
   title: string;
   detail: string;
   recommendation: string;
+  evidence: FindingEvidence[];
+  scope?: { url?: string };
 }
 
 export interface PageSnapshot {
@@ -94,26 +110,54 @@ export interface PageSnapshot {
   linkCount: number;
 }
 
+export interface PageObservation {
+  url: string;
+  title: string;
+  status: number | null;
+  metaDescription: string | null;
+  h1: string | null;
+  scriptCount: number;
+  externalScriptHosts: string[];
+  formCount: number;
+  passwordFieldCount: number;
+  linkCount: number;
+  screenshotFile?: string | null;
+}
+
+export interface BrowserPageError {
+  url: string;
+  message: string;
+}
+
 export interface HeaderCheck {
   name: string;
   present: boolean;
   value: string | null;
 }
 
-export interface SandboxAuditResult {
+export interface SandboxObservation {
+  targetUrl: string;
   headers: HeaderCheck[];
   tlsRedirect: boolean;
   serverBanner: string | null;
-  findings: Finding[];
   durationMs: number;
+  probedAt: string;
 }
 
-export interface BrowserAuditResult {
+export interface BrowserObservation {
+  targetUrl: string;
   sessionId: string;
   replayUrl: string | null;
   pages: PageSnapshot[];
-  findings: Finding[];
+  pageErrors: BrowserPageError[];
   durationMs: number;
+  probedAt: string;
+}
+
+export interface ObservationBundle {
+  targetUrl: string;
+  sandbox: SandboxObservation | null;
+  browser: BrowserObservation | null;
 }
 
 export interface AuditRelayReport {
@@ -124,15 +168,18 @@ export interface AuditRelayReport {
   sandboxMs: number;
   browserMs: number;
   status: RunStatus;
-  browser: BrowserAuditResult | null;
-  sandbox: SandboxAuditResult | null;
+  sandbox: SandboxObservation | null;
+  browser: BrowserObservation | null;
   findings: Finding[];
   score: number;
   verdict: string;
+  registryVersion: string;
 }
 
 export interface AuditOptions {
   skipReplay?: boolean;
   maxExtraPages?: number;
   depth?: AuditDepth;
+  fromRun?: string;
+  phases?: PipelinePhase[];
 }

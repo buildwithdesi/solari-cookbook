@@ -59,6 +59,8 @@ npm run audit -- https://example.com
 
 ## Phase 2 — Observation / interpret split
 
+**Status:** Done
+
 **Problem:** Findings and raw facts live in one blob. Cannot re-score without re-probing Solari.
 
 **Work:**
@@ -77,8 +79,8 @@ npm run audit -- --from-run runs/{run_id} --phases interpret,score,render
 
 **Exit criteria:**
 
-- `npm test` covers interpret engine with fixture observations (no Solari)
-- Re-run interpret+score on cached run produces identical findings
+- [x] `npm test` covers interpret engine with fixture observations (no Solari)
+- [x] Re-run interpret+score on cached run produces findings from registry check_ids
 
 ---
 

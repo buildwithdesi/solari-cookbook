@@ -1,0 +1,24 @@
+{
+  "targetUrl": "https://example.com",
+  "sessionId": "fixture-session",
+  "replayUrl": null,
+  "durationMs": 8000,
+  "probedAt": "2026-09-01T07:00:08.000Z",
+  "pageErrors": [],
+  "pages": [
+    {
+      "url": "https://example.com",
+      "title": "Example Domain",
+      "status": 200,
+      "screenshotBase64": "",
+      "screenshotFile": null,
+      "metaDescription": null,
+      "h1": "Example Domain",
+      "scriptCount": 20,
+      "externalScriptHosts": ["cdn.example.net"],
+      "formCount": 0,
+      "passwordFieldCount": 0,
+      "linkCount": 1
+    }
+  ]
+}

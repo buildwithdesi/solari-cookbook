@@ -1,11 +1,7 @@
 import { SolariClient } from "@solarisdk/sdk";
 
-import {
-  findingsFromHeaders,
-  findingsFromTlsRedirect,
-  requiredHeaders,
-} from "./findings.js";
-import type { HeaderCheck, SandboxAuditResult } from "./types.js";
+import { requiredHeaderNames } from "./registry/checks.js";
+import type { HeaderCheck, SandboxObservation } from "../types.js";
 
 function parseHeaders(raw: string): Map<string, string> {
   const map = new Map<string, string>();
@@ -22,14 +18,14 @@ function parseHeaders(raw: string): Map<string, string> {
 
 function headerChecks(raw: string): HeaderCheck[] {
   const parsed = parseHeaders(raw);
-  return requiredHeaders().map((name) => ({
+  return requiredHeaderNames().map((name) => ({
     name,
     present: parsed.has(name),
     value: parsed.get(name) ?? null,
   }));
 }
 
-export async function runSandboxAudit(targetUrl: string): Promise<SandboxAuditResult> {
+export async function observeSandbox(targetUrl: string): Promise<SandboxObservation> {
   const startedAt = Date.now();
   const normalized = /^https?:\/\//i.test(targetUrl)
     ? targetUrl
@@ -71,30 +67,18 @@ export async function runSandboxAudit(targetUrl: string): Promise<SandboxAuditRe
 
     const serverBanner = serverLine ? serverLine.split(":").slice(1).join(":").trim() : null;
 
-    const findings = [
-      ...findingsFromHeaders(headerList),
-      ...findingsFromTlsRedirect(tlsRedirect, normalized),
-    ];
-
-    if (serverBanner) {
-      findings.push({
-        id: "server-banner",
-        severity: "low",
-        category: "Fingerprint",
-        title: "Server banner exposed",
-        detail: serverBanner,
-        recommendation: "Strip or genericize the Server header at the edge.",
-      });
-    }
-
     return {
+      targetUrl: normalized,
       headers: headerList,
       tlsRedirect,
       serverBanner,
-      findings,
       durationMs: Date.now() - startedAt,
+      probedAt: new Date().toISOString(),
     };
   } finally {
     await sandbox.kill();
   }
 }
+
+/** @deprecated use observeSandbox */
+export const runSandboxAudit = observeSandbox;

@@ -2,15 +2,16 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { RUN_REL_PATHS, runDir } from "./core/paths.js";
+import { writeFindingsFile } from "./core/run-store.js";
 import { computeScore, dedupeFindings, scoreVerdict, sortFindings } from "./findings.js";
 import type {
   AuditRelayReport,
-  BrowserAuditResult,
+  BrowserObservation,
   Finding,
   PageSnapshot,
   RunStatus,
   RunSummary,
-  SandboxAuditResult,
+  SandboxObservation,
   Severity,
 } from "./types.js";
 
@@ -76,7 +77,12 @@ export function buildSummary(report: AuditRelayReport): RunSummary {
     top_findings: findings
       .filter((f) => f.severity !== "pass")
       .slice(0, 5)
-      .map((f) => ({ id: f.id, severity: f.severity, title: f.title })),
+      .map((f) => ({
+        check_id: f.check_id,
+        id: f.id,
+        severity: f.severity,
+        title: f.title,
+      })),
   };
 }
 
@@ -93,6 +99,7 @@ function renderFindingCards(findings: Finding[]): string {
         <div class="finding-top">
           <span class="pill pill-${finding.severity}">${severityLabel(finding.severity)}</span>
           <span class="category">${escapeHtml(finding.category)}</span>
+          <code class="check-id">${escapeHtml(finding.check_id)}</code>
         </div>
         <h3>${escapeHtml(finding.title)}</h3>
         <p>${escapeHtml(finding.detail)}</p>
@@ -119,7 +126,7 @@ function renderPassedChecks(findings: Finding[]): string {
     .join("\n");
 }
 
-function renderHeaderTable(headers: SandboxAuditResult["headers"]): string {
+function renderHeaderTable(headers: SandboxObservation["headers"]): string {
   return headers
     .map((header) => {
       const status = header.present ? "yes" : "no";
@@ -274,6 +281,7 @@ export function buildHtmlReport(report: AuditRelayReport): string {
     .finding { border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
     .finding h3 { margin: 8px 0 6px; font-size: 1rem; }
     .finding-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .check-id { font-size: 0.75rem; color: var(--muted); }
     .pill {
       font-family: "JetBrains Mono", monospace;
       font-size: 11px;
@@ -321,7 +329,7 @@ export function buildHtmlReport(report: AuditRelayReport): string {
   <div class="wrap">
     <header class="hero">
       <div>
-        <p class="eyebrow">AuditRelay · Run ${escapeHtml(report.runId)}</p>
+        <p class="eyebrow">AuditRelay · Run ${escapeHtml(report.runId)} · registry ${escapeHtml(report.registryVersion)}</p>
         <h1>${escapeHtml(report.targetUrl)}</h1>
         <p class="sub">Generated ${escapeHtml(new Date(report.auditedAt).toLocaleString())} · ${Math.round(report.durationMs / 1000)}s total · status ${escapeHtml(report.status)}</p>
         <p class="verdict">${escapeHtml(report.verdict)}</p>
@@ -364,40 +372,35 @@ export function buildHtmlReport(report: AuditRelayReport): string {
 </html>`;
 }
 
-function stripPageForObservation(page: PageSnapshot): Omit<PageSnapshot, "screenshotBase64"> {
-  return {
-    url: page.url,
-    title: page.title,
-    status: page.status,
-    screenshotFile: page.screenshotFile,
-    metaDescription: page.metaDescription,
-    h1: page.h1,
-    scriptCount: page.scriptCount,
-    externalScriptHosts: page.externalScriptHosts,
-    formCount: page.formCount,
-    passwordFieldCount: page.passwordFieldCount,
-    linkCount: page.linkCount,
-  };
-}
-
-async function writeScreenshots(
-  pages: PageSnapshot[],
-  screenshotDir: string,
-  relativePrefix: string,
-): Promise<PageSnapshot[]> {
+export async function persistBrowserScreenshots(
+  projectRoot: string,
+  runId: string,
+  browser: BrowserObservation,
+): Promise<BrowserObservation> {
+  const screenshotDir = path.join(runDir(projectRoot, runId), RUN_REL_PATHS.screenshotDir);
   await mkdir(screenshotDir, { recursive: true });
 
-  const updated: PageSnapshot[] = [];
-  for (let index = 0; index < pages.length; index += 1) {
-    const page = pages[index];
+  const pages: PageSnapshot[] = [];
+  for (let index = 0; index < browser.pages.length; index += 1) {
+    const page = browser.pages[index];
+    if (page.screenshotFile && !page.screenshotBase64) {
+      pages.push(page);
+      continue;
+    }
+
     const filename = `page-${index + 1}.png`;
-    await writeFile(path.join(screenshotDir, filename), Buffer.from(page.screenshotBase64, "base64"));
-    updated.push({
+    await writeFile(
+      path.join(screenshotDir, filename),
+      Buffer.from(page.screenshotBase64, "base64"),
+    );
+    pages.push({
       ...page,
-      screenshotFile: `${relativePrefix}${filename}`,
+      screenshotFile: `../screenshots/${filename}`,
+      screenshotBase64: "",
     });
   }
-  return updated;
+
+  return { ...browser, pages };
 }
 
 export interface RunArtifactPaths {
@@ -416,57 +419,21 @@ export async function writeRunArtifacts(
   report: AuditRelayReport,
 ): Promise<RunArtifactPaths> {
   const dir = runDir(projectRoot, runId);
-  const screenshotDir = path.join(dir, RUN_REL_PATHS.screenshotDir);
   const htmlDir = path.join(dir, "artifacts/render");
 
-  await mkdir(screenshotDir, { recursive: true });
   await mkdir(htmlDir, { recursive: true });
-  await mkdir(path.join(dir, "observations"), { recursive: true });
-  await mkdir(path.join(dir, "artifacts/browser"), { recursive: true });
 
-  let pages = report.browser?.pages ?? [];
-  if (pages.length > 0) {
-    pages = await writeScreenshots(pages, screenshotDir, "../screenshots/");
+  let browser = report.browser;
+  if (browser && browser.pages.some((page) => page.screenshotBase64)) {
+    browser = await persistBrowserScreenshots(projectRoot, runId, browser);
   }
 
   const reportForHtml: AuditRelayReport = {
     ...report,
-    browser: report.browser ? { ...report.browser, pages } : null,
+    browser,
   };
 
-  if (report.sandbox) {
-    const sandboxObs = {
-      headers: report.sandbox.headers,
-      tlsRedirect: report.sandbox.tlsRedirect,
-      serverBanner: report.sandbox.serverBanner,
-      durationMs: report.sandbox.durationMs,
-    };
-    await writeFile(
-      path.join(dir, RUN_REL_PATHS.sandboxObservation),
-      JSON.stringify(sandboxObs, null, 2),
-      "utf8",
-    );
-  }
-
-  if (report.browser) {
-    const browserObs = {
-      sessionId: report.browser.sessionId,
-      replayUrl: report.browser.replayUrl,
-      durationMs: report.browser.durationMs,
-      pages: pages.map((page) => stripPageForObservation(page)),
-    };
-    await writeFile(
-      path.join(dir, RUN_REL_PATHS.browserObservation),
-      JSON.stringify(browserObs, null, 2),
-      "utf8",
-    );
-
-    if (report.browser.replayUrl) {
-      await writeFile(path.join(dir, RUN_REL_PATHS.replayUrl), report.browser.replayUrl, "utf8");
-    }
-  }
-
-  await writeFile(path.join(dir, RUN_REL_PATHS.findings), JSON.stringify(report.findings, null, 2), "utf8");
+  await writeFindingsFile(projectRoot, runId, report.findings, report.registryVersion);
 
   const summary = buildSummary(report);
   await writeFile(path.join(dir, RUN_REL_PATHS.summary), JSON.stringify(summary, null, 2), "utf8");
@@ -476,6 +443,10 @@ export async function writeRunArtifacts(
     buildHtmlReport(reportForHtml),
     "utf8",
   );
+
+  if (browser?.replayUrl) {
+    await writeFile(path.join(dir, RUN_REL_PATHS.replayUrl), browser.replayUrl, "utf8");
+  }
 
   return {
     manifestPaths: {
@@ -488,18 +459,18 @@ export async function writeRunArtifacts(
   };
 }
 
-export function finalizeReport(
+export function buildReport(
   runId: string,
   targetUrl: string,
   startedAt: number,
-  browser: BrowserAuditResult | null,
-  sandbox: SandboxAuditResult | null,
+  sandbox: SandboxObservation | null,
+  browser: BrowserObservation | null,
+  findings: Finding[],
   status: RunStatus,
+  registryVersion: string,
 ): AuditRelayReport {
-  const browserFindings = browser?.findings ?? [];
-  const sandboxFindings = sandbox?.findings ?? [];
-  const findings = dedupeFindings(sortFindings([...browserFindings, ...sandboxFindings]));
-  const score = computeScore(findings);
+  const sorted = dedupeFindings(sortFindings(findings));
+  const score = computeScore(sorted);
 
   return {
     runId,
@@ -509,10 +480,25 @@ export function finalizeReport(
     sandboxMs: sandbox?.durationMs ?? 0,
     browserMs: browser?.durationMs ?? 0,
     status,
-    browser,
     sandbox,
-    findings,
+    browser,
+    findings: sorted,
     score,
     verdict: scoreVerdict(score),
+    registryVersion,
   };
+}
+
+/** @deprecated use buildReport */
+export function finalizeReport(
+  runId: string,
+  targetUrl: string,
+  startedAt: number,
+  browser: BrowserObservation | null,
+  sandbox: SandboxObservation | null,
+  status: RunStatus,
+  findings: Finding[],
+  registryVersion: string,
+): AuditRelayReport {
+  return buildReport(runId, targetUrl, startedAt, sandbox, browser, findings, status, registryVersion);
 }

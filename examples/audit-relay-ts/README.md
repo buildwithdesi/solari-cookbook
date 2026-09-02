@@ -53,6 +53,9 @@ $env:AUDIT_LANDING_ONLY='1'; npm run audit -- https://example.com
 
 # Local scoring tests (no API key burn)
 npm test
+
+# Re-score a cached run (no Solari calls)
+npm run audit -- --from-run runs/{run_id} --phases interpret,score,render
 ```
 
 Direct tsx also works if flags must be explicit:
